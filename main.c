@@ -26,31 +26,59 @@ char *xstrdup (const char *s) {
 
 struct fb_fix_screeninfo fbfi;
 struct fb_var_screeninfo fbvi;
+int fbfd;
 void *fb;
+
+void getVi () {
+	size_t fbSize = fbfi.line_length * fbvi.yres;
+	if (ioctl (fbfd, FBIOGET_VSCREENINFO, &fbvi) < 0) err (1, "failed to get framebuffer configuration");
+	fb = mremap (fb, fbSize, fbfi.line_length * fbvi.yres, MREMAP_MAYMOVE);
+	if (!fb) err (1, "failed to mremap framebuffer");
+}
+
+void putVi () {
+	size_t fbSize = fbfi.line_length * fbvi.yres;
+	if (ioctl (fbfd, FBIOPUT_VSCREENINFO, &fbvi) < 0) err (1, "failed to put framebuffer configuration");
+	fb = mremap (fb, fbSize, fbfi.line_length * fbvi.yres, MREMAP_MAYMOVE);
+	if (!fb) err (1, "failed to mremap framebuffer");
+}
 
 enum {
 	QPath_root = 0,
 	QPath_img,
+	QPath_fi,
+	QPath_vi,
 	QPathMAX
 };
 
 char *qpathNames[QPathMAX] = {
 	[QPath_img]	= "img",
+	[QPath_fi]	= "fi",
+	[QPath_vi]	= "vi",
 };
 
 Qid qpathQids[QPathMAX] = {
 	[QPath_img]	= { .type = QTFILE, .vers = 0, .path = QPath_img },
+	[QPath_fi]	= { .type = QTFILE, .vers = 0, .path = QPath_fi  },
+	[QPath_vi]	= { .type = QTFILE, .vers = 0, .path = QPath_vi  },
 };
 
 uint32_t qpathModes[QPathMAX] = {
 	[0]		= DMREAD | DMEXEC,
 	[QPath_img]	= DMREAD | DMWRITE,
+	[QPath_fi]	= DMREAD,
+	[QPath_vi]	= DMREAD | DMWRITE,
 };
 
 ssize_t qpathLength (uint64_t path) {
 	switch (path) {
 	case QPath_img:
+		getVi ();
 		return fbfi.line_length * fbvi.yres;
+	case QPath_fi:
+		return sizeof (struct fb_fix_screeninfo);
+	case QPath_vi:
+		return sizeof (struct fb_var_screeninfo);
 	default:
 		return 0;
 	}
@@ -84,7 +112,7 @@ void l9fb_dostat (Dir *dir) {
 	uint64_t path = dir -> qid.path;
 	*dir = (Dir){
 		.qid = qpathQids[path],
-		.mode = qpathModes[path],
+		.mode = qpathModes[path] << 6 | qpathModes[path] << 3 | qpathModes[path],
 		.atime = 0, .mtime = 0,
 		.length = qpathLength (path),
 		.name = xstrdup (qpathNames[path]),
@@ -95,9 +123,9 @@ void l9fb_dostat (Dir *dir) {
 }
 
 int l9fb_genroot (int n, Dir *dir, void *_) {
-	uint64_t paths[] = { QPath_img, 0 };
+	uint64_t paths[] = { QPath_img, QPath_fi, QPath_vi, 0 };
 	if (!paths[n]) return -1;
-	dir -> qid.path = paths[n];
+	dir -> qid = qpathQids[paths[n]];
 	l9fb_dostat (dir);
 	return 0;
 }
@@ -109,7 +137,17 @@ void l9fb_read (Req *r) {
 		respond (r, 0);
 		break;
 	case QPath_img:
+		getVi ();
 		readbuf (r, fb, fbfi.line_length * fbvi.yres);
+		respond (r, 0);
+		break;
+	case QPath_fi:
+		readbuf (r, &fbfi, sizeof (struct fb_fix_screeninfo));
+		respond (r, 0);
+		break;
+	case QPath_vi:
+		getVi ();
+		readbuf (r, &fbvi, sizeof (struct fb_var_screeninfo));
 		respond (r, 0);
 		break;
 	default:
@@ -120,8 +158,19 @@ void l9fb_read (Req *r) {
 void l9fb_write (Req *r) {
 	switch (r -> fid -> qid.path) {
 	case QPath_img:
+		getVi ();
 		r -> ofcall.count = MIN(fbfi.line_length * fbvi.yres - r -> ifcall.offset, r -> ifcall.count);
 		memcpy ((uint8_t *)fb + r -> ifcall.offset, r -> ifcall.data, r -> ofcall.count);
+		respond (r, 0);
+		break;
+	case QPath_vi:
+		if ((r -> ifcall.offset | r -> ifcall.count) & 3) {
+			respond (r, "Misaligned write");
+			break;
+		}
+		r -> ofcall.count = MIN(MAX (0, sizeof (struct fb_var_screeninfo) - r -> ifcall.offset), r -> ifcall.count);
+		memcpy ((uint8_t *)(&fbvi) + r -> ifcall.offset, r -> ifcall.data, r -> ifcall.count);
+		putVi ();
 		respond (r, 0);
 		break;
 	default:
@@ -171,19 +220,18 @@ Srv l9fb_srv = {
 int main (int argc, char *argu[]) {
 	{
 		char *path;
-		int fd;
 		
 		(path = getenv ("FRAMEBUFFER")) || (path = "/dev/fb0");
-		fd = open (path, O_RDWR);
-		if (fd < 0) err (1, "failed to open framebuffer %s", path);
-		if (ioctl (fd, FBIOGET_FSCREENINFO, &fbfi) < 0 ||
-		    ioctl (fd, FBIOGET_VSCREENINFO, &fbvi) < 0) err (1, "failed to learn framebuffer size");
-		fb = mmap (0, fbfi.line_length * fbvi.yres, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+		fbfd = open (path, O_RDWR);
+		if (fbfd < 0) err (1, "failed to open framebuffer %s", path);
+		if (ioctl (fbfd, FBIOGET_FSCREENINFO, &fbfi) < 0 ||
+		    ioctl (fbfd, FBIOGET_VSCREENINFO, &fbvi) < 0) err (1, "failed to learn framebuffer configuration");
+		fb = mmap (0, fbfi.line_length * fbvi.yres, PROT_READ | PROT_WRITE, MAP_SHARED, fbfd, 0);
 		if (!fb) err (1, "failed to mmap framebuffer %s", path);
-		close (fd);
 	}
 
 	srv (&l9fb_srv);
 
 	munmap (fb, fbfi.line_length * fbvi.yres);
+	close (fbfd);
 }
