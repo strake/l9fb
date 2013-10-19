@@ -13,6 +13,9 @@
 #include <stdio.h>
 #include <err.h>
 
+#define MAX(x, y) ((x) > (y) ? (x) : (y))
+#define MIN(x, y) ((x) < (y) ? (x) : (y))
+
 char *xstrdup (const char *s) {
 	char *t;
 	if (!s) return 0;
@@ -115,10 +118,9 @@ void l9fb_read (Req *r) {
 }
 
 void l9fb_write (Req *r) {
-	size_t fbSize = fbfi.line_length * fbvi.yres;
 	switch (r -> fid -> qid.path) {
 	case QPath_img:
-		r -> ofcall.count = r -> ifcall.offset + r -> ofcall.count > fbSize ? fbSize - r -> ifcall.offset : r -> ifcall.count;
+		r -> ofcall.count = MIN(fbfi.line_length * fbvi.yres - r -> ifcall.offset, r -> ifcall.count);
 		memcpy ((uint8_t *)fb + r -> ifcall.offset, r -> ifcall.data, r -> ofcall.count);
 		respond (r, 0);
 		break;
