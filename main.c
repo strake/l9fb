@@ -5,13 +5,12 @@
 #include <thread.h>
 #include <9p.h>
 #include <unistd.h>
-#include <fcntl.h>
-#include <sys/mman.h>
 #include <linux/fb.h>
 #include <stdlib.h>
-#include <stdarg.h>
 #include <stdio.h>
 #include <err.h>
+
+#include "video.h"
 
 #define MAX(x, y) ((x) > (y) ? (x) : (y))
 #define MIN(x, y) ((x) < (y) ? (x) : (y))
@@ -22,25 +21,6 @@ char *xstrdup (const char *s) {
 	t = strdup (s);
 	if (!t) err (1, "failed to allocate memory");
 	return t;
-}
-
-struct fb_fix_screeninfo fbfi;
-struct fb_var_screeninfo fbvi;
-int fbfd;
-void *fb;
-
-void getVi () {
-	size_t fbSize = fbfi.line_length * fbvi.yres;
-	if (ioctl (fbfd, FBIOGET_VSCREENINFO, &fbvi) < 0) err (1, "failed to get framebuffer configuration");
-	fb = mremap (fb, fbSize, fbfi.line_length * fbvi.yres, MREMAP_MAYMOVE);
-	if (!fb) err (1, "failed to mremap framebuffer");
-}
-
-void putVi () {
-	size_t fbSize = fbfi.line_length * fbvi.yres;
-	if (ioctl (fbfd, FBIOPUT_VSCREENINFO, &fbvi) < 0) err (1, "failed to put framebuffer configuration");
-	fb = mremap (fb, fbSize, fbfi.line_length * fbvi.yres, MREMAP_MAYMOVE);
-	if (!fb) err (1, "failed to mremap framebuffer");
 }
 
 enum {
@@ -146,7 +126,10 @@ void l9fb_read (Req *r) {
 		respond (r, 0);
 		break;
 	case QPath_vi:
-		getVi ();
+		if (getVi () < 0) {
+			respond (r, "Failure");
+			break;
+		}
 		readbuf (r, &fbvi, sizeof (struct fb_var_screeninfo));
 		respond (r, 0);
 		break;
@@ -170,7 +153,10 @@ void l9fb_write (Req *r) {
 		}
 		r -> ofcall.count = MIN(MAX (0, sizeof (struct fb_var_screeninfo) - r -> ifcall.offset), r -> ifcall.count);
 		memcpy ((uint8_t *)(&fbvi) + r -> ifcall.offset, r -> ifcall.data, r -> ifcall.count);
-		putVi ();
+		if (putVi () < 0) {
+			respond (r, "Failure");
+			break;
+		}
 		respond (r, 0);
 		break;
 	default:
@@ -218,20 +204,7 @@ Srv l9fb_srv = {
 };
 
 int main (int argc, char *argu[]) {
-	{
-		char *path;
-		
-		(path = getenv ("FRAMEBUFFER")) || (path = "/dev/fb0");
-		fbfd = open (path, O_RDWR);
-		if (fbfd < 0) err (1, "failed to open framebuffer %s", path);
-		if (ioctl (fbfd, FBIOGET_FSCREENINFO, &fbfi) < 0 ||
-		    ioctl (fbfd, FBIOGET_VSCREENINFO, &fbvi) < 0) err (1, "failed to learn framebuffer configuration");
-		fb = mmap (0, fbfi.line_length * fbvi.yres, PROT_READ | PROT_WRITE, MAP_SHARED, fbfd, 0);
-		if (!fb) err (1, "failed to mmap framebuffer %s", path);
-	}
-
+	if (initVideo () < 0) err (1, "failed to initialize video");
+	atexit (exitVideo);
 	srv (&l9fb_srv);
-
-	munmap (fb, fbfi.line_length * fbvi.yres);
-	close (fbfd);
 }
