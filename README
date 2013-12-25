@@ -1,0 +1,5 @@
+l9fb serves a Linux framebuffer over 9p.
+
+/fi	raw fb_fix_screeninfo struct
+/vi	raw fb_var_screeninfo struct
+/img	raw framebuffer data
