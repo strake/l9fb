@@ -250,7 +250,6 @@ int main (int argc, char *argu[]) {
 			ERR ("bad message");
 #undef ERR
 		}
-		storFcall (&fcall, msg);
 		write (1, msg, storFcall (&fcall, msg));
 		switch (fcall.type) {
 		case RRead:
