@@ -1,6 +1,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/mman.h>
+#include <linux/mman.h>
 #include <linux/fb.h>
 #include <stdlib.h>
 
