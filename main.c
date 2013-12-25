@@ -1,7 +1,4 @@
-#define NOPLAN9DEFINES
-#include <u.h>
-#include <libc.h>
-#include <fcall.h>
+#include <memory.h>
 #include <unistd.h>
 #include <sys/mman.h>
 #include <linux/fb.h>
@@ -9,29 +6,9 @@
 #include <stdio.h>
 #include <err.h>
 
+#include "9p.h"
 #include "video.h"
-
-#define MAX(x, y) ((x) > (y) ? (x) : (y))
-#define MIN(x, y) ((x) < (y) ? (x) : (y))
-
-void *xrealloc (void *p, size_t n) {
-	p = realloc (p, n);
-	if (!p) err (1, "failed to allocate memory");
-	return p;
-}
-
-char *xstrdup (const char *s) {
-	char *t;
-	if (!s) return 0;
-	t = strdup (s);
-	if (!t) err (1, "failed to allocate memory");
-	return t;
-}
-
-size_t xread (int fd, void *x, size_t n) {
-	if (read (fd, x, n) < n) err (1, "failed to read");
-	return n;
-}
+#include "util.h"
 
 enum {
 	QPathNIL = 0,
@@ -62,7 +39,28 @@ uint32_t qpathModes[QPathMAX] = {
 	[QPath_vi]	= DMREAD | DMWRITE,
 };
 
+/* if dir, list of child qpaths
+ * else,   pointer to file data
+ */
+void *qpathPtrs[QPathMAX] = {
+	[QPath_root]	= (uint64_t []){ QPath_img, QPath_fi, QPath_vi, 0 },
+	[QPath_fi]	= &fbfi,
+	[QPath_vi]	= &fbvi,
+};
+
+void dostat (Dir *);
+
 ssize_t qpathLength (uint64_t path) {
+	if (qpathQids[path].type == QTDIR) {
+		uint64_t *theseQPaths = qpathPtrs[path];
+		size_t l = 0;
+		for (int ii = 0; theseQPaths[ii]; ii++) {
+			Dir dir = { .qid = qpathQids[theseQPaths[ii]] };
+			dostat (&dir);
+			l += storDir (&dir, 0);
+		}
+		return l;
+	}
 	switch (path) {
 	case QPath_img:
 		getVi ();
@@ -76,45 +74,21 @@ ssize_t qpathLength (uint64_t path) {
 	}
 }
 
-/* if dir, list of child qpaths
- * else,   pointer to file data
- */
-void *qpathPtrs[QPathMAX] = {
-	[QPath_root]	= (uint64_t []){ QPath_img, QPath_fi, QPath_vi, 0 },
-	[QPath_fi]	= &fbfi,
-	[QPath_vi]	= &fbvi,
-};
-
-void pointbuf (Fcall *p_fcall, void *x, size_t n) {
-	if (p_fcall -> offset > n) {
-		p_fcall -> count = 0;
-		p_fcall -> data  = 0;
-		return;
-	}
-	p_fcall -> count = MIN(p_fcall -> count, n - p_fcall -> offset);
-	p_fcall -> data  = (uint8_t *)x + p_fcall -> offset;
+size_t clip (Fcall fcall, void *x, size_t n) {
+	return (fcall.offset > n ? 0 : MIN(fcall.count, n - fcall.offset));
 }
 
-void writebuf (Fcall *p_fcall, void *x, size_t n) {
-	if (p_fcall -> offset > n) {
-		p_fcall -> count = 0;
-		return;
-	}
-	p_fcall -> count = MIN(p_fcall -> count, n - p_fcall -> offset);
-	memcpy (x, (uint8_t *)x + p_fcall -> offset, p_fcall -> count);
-}
-
-void dostat (Dir *dir) {
-	uint64_t path = dir -> qid.path;
-	*dir = (Dir){
+void dostat (Dir *p_dir) {
+	uint64_t path = p_dir -> qid.path;
+	*p_dir = (Dir){
 		.qid = qpathQids[path],
-		.mode = qpathModes[path] << 6 | qpathModes[path] << 3 | qpathModes[path],
+		.mode = qpathQids[path].type << 24 | qpathModes[path] << 6 | qpathModes[path] << 3 | qpathModes[path],
 		.atime = 0, .mtime = 0,
 		.length = qpathLength (path),
 		.name = xstrdup (qpathNames[path]),
-		.uid  = xstrdup (""),
-		.gid  = xstrdup (""),
-		.muid = xstrdup (""),
+		.uid  = 0,
+		.gid  = 0,
+		.muid = 0,
 	};
 }
 
@@ -122,6 +96,7 @@ int main (int argc, char *argu[]) {
 	uint64_t *qpaths;
 	uint8_t *msg;
 	ssize_t n, msize = 1 << 24;
+	void *x;
 	
 	if (initVideo () < 0) err (1, "failed to initialize video");
 	atexit (exitVideo);
@@ -134,15 +109,13 @@ int main (int argc, char *argu[]) {
 	msg = xrealloc (0, msize);
 	for (;;) {
 		Fcall fcall;
-		Dir dir;
 		n = read9pmsg (0, msg, msize);
 		if (n <  0) err (1, "failed to read");
-		fprintf (stderr, "%d\t%d\n", n, fcall.type);
 		if (n == 0) break;
-		convM2S (msg, n, &fcall);
+		if (loadFcall (&fcall, msg) < 0) err (1, "bad message");
 		switch (fcall.type++) {
-#define ERR(x) do { fcall.type = Rerror; fcall.ename = (x); } while (0)
-		case Tversion:
+#define ERR(x) do { fcall.type = RError; fcall.ename = (x); } while (0)
+		case TVersion:
 			fcall.msize = msize = MIN(msize, fcall.msize);
 			if (msize < 24) {
 				ERR("msize too small");
@@ -151,15 +124,16 @@ int main (int argc, char *argu[]) {
 			if (strncmp (fcall.version, "9P2000", 6) == 0) fcall.version[6] = 0;
 			else fcall.version = "unknown";
 			break;
-		case Tauth:
+		case TAuth:
 			ERR("l9fb: authentication not required");
 			break;
-		case Tflush:
+		case TFlush:
 			break;
-		case Tattach:
+		case TAttach:
+			qpaths[fcall.fid] = QPath_root;
 			fcall.qid = qpathQids[QPath_root];
 			break;
-		case Twalk:
+		case TWalk:
 			if (!qpaths[fcall.fid] || fcall.fid != fcall.newfid && qpaths[fcall.newfid]) {
 				ERR("bad fid");
 				break;
@@ -183,9 +157,10 @@ int main (int argc, char *argu[]) {
 					fcall.wqid[ii] = qpathQids[qpath];
 				}
 				fcall.nwqid = ii;
+				if (ii == fcall.nwname) qpaths[fcall.newfid] = qpath;
 			}
-			break;
-		case Topen:
+ 			break;
+		case TOpen:
 			if (!qpaths[fcall.fid]) ERR("bad fid");
 			else {
 				int modes[4] = {
@@ -194,11 +169,11 @@ int main (int argc, char *argu[]) {
 					[ORDWR]		= DMREAD | DMWRITE,
 					[OEXEC]		= DMREAD | DMWRITE | DMEXEC,
 				};
-				if (qpathModes[qpaths[fcall.fid]] & modes[fcall.mode] == modes[fcall.mode]) fcall.qid = qpathQids[qpaths[fcall.fid]];
+				if ((qpathModes[qpaths[fcall.fid]] & modes[fcall.mode & 3]) == modes[fcall.mode & 3]) fcall.qid = qpathQids[qpaths[fcall.fid]];
 				else ERR("denied");
 			}
 			break;
-		case Tread:
+		case TRead:
 			if (!qpaths[fcall.fid]) ERR("bad fid");
 			if (!(qpathModes[qpaths[fcall.fid]] & DMREAD)) {
 				ERR("denied");
@@ -208,26 +183,33 @@ int main (int argc, char *argu[]) {
 			qpathPtrs[QPath_img] = fb;
 			if (qpathQids[qpaths[fcall.fid]].type == QTDIR) {
 				uint64_t *theseQPaths = qpathPtrs[qpaths[fcall.fid]];
-				uint8_t *p, *q;
-				p = fcall.data = msg + 9;
+				uint8_t *p;
+				p = x = msg + 11;
 				for (int ii = 0; theseQPaths[ii]; ii++) {
+					Dir dir;
 					dir.qid = qpathQids[theseQPaths[ii]];
 					dostat (&dir);
-					if (fcall.offset >= sizeD2M (&dir)) {
-						fcall.offset -= sizeD2M (&dir);
+					if (fcall.offset >= storDir (&dir, 0)) {
+						fcall.offset -= storDir (&dir, 0);
 						continue;
 					}
-					q = p + sizeD2M (&dir) - fcall.offset;
-					if (q - msg > msize) break;
-					memmove (p, p + fcall.offset, convD2M (&dir, p, msize - (p - msg)) - fcall.offset);
+					if (storDir (&dir, 0) + 11 > msize) ERR("too big");
+					memmove (p, p + fcall.offset, storDir (&dir, p) - fcall.offset);
+					p += storDir (&dir, 0) - fcall.offset;
 					fcall.offset = 0;
-					p = q;
+					if (p - msg - 11 > fcall.count) {
+						p = msg + 11 + fcall.count;
+						break;
+					}
 				}
-				fcall.count = q - (uint8_t *)fcall.data;
+				if (fcall.type != RError) fcall.count = p - msg - 11;
 			}
-			else pointbuf (&fcall, qpathPtrs[qpaths[fcall.fid]], qpathLength (qpaths[fcall.fid]));
+			else {
+				fcall.count = clip (fcall, qpathPtrs[qpaths[fcall.fid]], qpathLength (qpaths[fcall.fid]));
+				x = (uint8_t *)(qpathPtrs[qpaths[fcall.fid]]) + fcall.offset;
+			}
 			break;
-		case Twrite:
+		case TWrite:
 			if (!qpaths[fcall.fid]) {
 				ERR("bad fid");
 				break;
@@ -238,31 +220,42 @@ int main (int argc, char *argu[]) {
 			}
 			getVi ();
 			qpathPtrs[QPath_img] = fb;
-			writebuf (&fcall, qpathPtrs[qpaths[fcall.fid]], qpathLength (qpaths[fcall.fid]));
+			{
+				uint8_t _;
+				size_t m = clip (fcall, qpathPtrs[qpaths[fcall.fid]], qpathLength (qpaths[fcall.fid]));
+				xread (0, (uint8_t *)(qpathPtrs[qpaths[fcall.fid]]) + fcall.offset, m);
+				for (; m < fcall.count; m++) read (0, &_, 1);
+			}
 			if (putVi () < 0) ERR("failed");
 			break;
-		case Tclunk:
+		case TClunk:
 			qpaths[fcall.fid] = 0;
 			break;
-		case Tstat:
+		case TStat:
 			if (!qpaths[fcall.fid]) {
 				ERR("bad fid");
 				break;
 			}
-			dir.qid = qpathQids[qpaths[fcall.fid]];
-			dostat (&dir);
-			fcall.stat = msg + 13;
-			fcall.nstat = convD2M (&dir, msg + 13, msize - 13);
+			fcall.st.qid = qpathQids[qpaths[fcall.fid]];
+			dostat (&fcall.st);
 			break;
-		case Tcreate:
-		case Tremove:
-		case Twstat:
+		case TCreate:
+		case TRemove:
 			ERR("denied");
+			break;
+		case TWStat:
+			// ignore; unusable otherwise
 			break;
 		default:
 			ERR ("bad message");
 #undef ERR
 		}
-		write (1, msg, convS2M (&fcall, msg, msize));
+		storFcall (&fcall, msg);
+		write (1, msg, storFcall (&fcall, msg));
+		switch (fcall.type) {
+		case RRead:
+			if (write (1, x, fcall.count) < fcall.count) err (1, "failed to write");
+			break;
+		}
 	}
 }
