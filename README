@@ -1,4 +1,4 @@
-l9fb serves a Linux framebuffer over 9p.
+l9fb serves the Linux framebuffer ($FRAMEBUFFER if defined, else /dev/fb0) over 9p on fds 0 and 1.
 
 /fi	raw fb_fix_screeninfo struct
 /vi	raw fb_var_screeninfo struct
