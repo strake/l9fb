@@ -10,10 +10,13 @@
 #include "video.h"
 #include "util.h"
 
+extern Fcall opOp (Fcall);
+
 enum {
 	QPathNIL = 0,
 	QPath_root,
 	QPath_img,
+	QPath_op,
 	QPath_fi,
 	QPath_vi,
 	QPathMAX
@@ -21,6 +24,7 @@ enum {
 
 char *qpathNames[QPathMAX] = {
 	[QPath_img]	= "img",
+	[QPath_op]	= "op",
 	[QPath_fi]	= "fi",
 	[QPath_vi]	= "vi",
 };
@@ -28,6 +32,7 @@ char *qpathNames[QPathMAX] = {
 Qid qpathQids[QPathMAX] = {
 	[QPath_root]	= { .type = QTDIR,  .vers = 0, .path = QPath_root },
 	[QPath_img]	= { .type = QTFILE, .vers = 0, .path = QPath_img  },
+	[QPath_op]	= { .type = QTFILE, .vers = 0, .path = QPath_op   },
 	[QPath_fi]	= { .type = QTFILE, .vers = 0, .path = QPath_fi   },
 	[QPath_vi]	= { .type = QTFILE, .vers = 0, .path = QPath_vi   },
 };
@@ -35,6 +40,7 @@ Qid qpathQids[QPathMAX] = {
 uint32_t qpathModes[QPathMAX] = {
 	[QPath_root]	= DMREAD | DMEXEC,
 	[QPath_img]	= DMREAD | DMWRITE,
+	[QPath_op]	= DMWRITE,
 	[QPath_fi]	= DMREAD,
 	[QPath_vi]	= DMREAD | DMWRITE,
 };
@@ -43,9 +49,13 @@ uint32_t qpathModes[QPathMAX] = {
  * else,   pointer to file data
  */
 void *qpathPtrs[QPathMAX] = {
-	[QPath_root]	= (uint64_t []){ QPath_img, QPath_fi, QPath_vi, 0 },
+	[QPath_root]	= (uint64_t []){ QPath_img, QPath_op, QPath_fi, QPath_vi, 0 },
 	[QPath_fi]	= &fbfi,
 	[QPath_vi]	= &fbvi,
+};
+
+Fcall (*qpathWOps[QPathMAX]) (Fcall, void *) = {
+	[QPath_op]	= opOp,
 };
 
 void dostat (Dir *);
@@ -223,7 +233,8 @@ int main (int argc, char *argu[]) {
 			}
 			getVi ();
 			qpathPtrs[QPath_img] = fb;
-			{
+			if (qpathWOps[qpaths[fcall.fid]]) fcall = qpathWOps[qpaths[fcall.fid]] (fcall, qpathPtrs[qpaths[fcall.fid]]);
+			else {
 				uint8_t _;
 				size_t m = clip (fcall, qpathPtrs[qpaths[fcall.fid]], qpathLength (qpaths[fcall.fid]));
 				xread (0, (uint8_t *)(qpathPtrs[qpaths[fcall.fid]]) + fcall.offset, m);
