@@ -169,7 +169,10 @@ int main (int argc, char *argu[]) {
 					[ORDWR]		= DMREAD | DMWRITE,
 					[OEXEC]		= DMREAD | DMWRITE | DMEXEC,
 				};
-				if ((qpathModes[qpaths[fcall.fid]] & modes[fcall.mode & 3]) == modes[fcall.mode & 3]) fcall.qid = qpathQids[qpaths[fcall.fid]];
+				if ((qpathModes[qpaths[fcall.fid]] & modes[fcall.mode & 3]) == modes[fcall.mode & 3]) {
+					fcall.qid    = qpathQids[qpaths[fcall.fid]];
+					fcall.iounit = msize - 24;
+				}
 				else ERR("denied");
 			}
 			break;
