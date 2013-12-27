@@ -3,3 +3,4 @@ l9fb serves the Linux framebuffer ($FRAMEBUFFER if defined, else /dev/fb0) over 
 /fi	raw fb_fix_screeninfo struct
 /vi	raw fb_var_screeninfo struct
 /img	raw framebuffer data
+/op	auxiliary operations
