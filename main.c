@@ -227,7 +227,7 @@ int main (int argc, char *argu[]) {
 				uint8_t _;
 				size_t m = clip (fcall, qpathPtrs[qpaths[fcall.fid]], qpathLength (qpaths[fcall.fid]));
 				xread (0, (uint8_t *)(qpathPtrs[qpaths[fcall.fid]]) + fcall.offset, m);
-				for (; m < fcall.count; m++) read (0, &_, 1);
+				for (; m < fcall.count; fcall.count--) read (0, &_, 1);
 			}
 			if (putVi () < 0) ERR("failed");
 			break;
