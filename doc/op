@@ -1,4 +1,4 @@
-Message format: name[] " "[1] argument[]
+Message format: name[] 0[1] argument[]
 
 fill	xmin[4] ymin[4] xmax[4] ymax[4] pixel[vi.bits_per_pixel + 7 >> 3]
 	

@@ -48,7 +48,7 @@ Fcall opOp (Fcall fcall) {
 	size_t l;
 	msg = xrealloc (0, fcall.count);
 	xread (0, msg, fcall.count);
-	for (int ii = 0; ops[ii].name; ii++) if (l = strlen (ops[ii].name), fcall.count >= l + 1 && memcmp (ops[ii].name, msg, l) == 0 && msg[l] == ' ') {
+	for (int ii = 0; ops[ii].name; ii++) if (l = strlen (ops[ii].name), fcall.count >= l + 1 && memcmp (ops[ii].name, msg, l) == 0 && msg[l] == 0) {
 		err = ops[ii].f (msg + l + 1, fcall.count - l - 1, ops[ii].x);
 		free (msg);
 		if (err) {
